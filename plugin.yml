@@ -1,0 +1,7 @@
+name: Ensure Kind Cluster
+description: Ensure a Buildkite step has a clean Kind cluster to run in
+author: SVP
+requirements: []
+configuration:
+  properties: {}
+  additionalProperties: false

@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+
+# Ensure that there is a single kind cluster running locally. Currently only deploys Agones, deploying everything kills a local cluster.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+
+CLUSTER_NAME="${CLUSTER_NAME:-imp-cluster-test}-$(( $BUILDKITE_BUILD_NUMBER % 100000000 ))"
+SVP_REPO="$(dirname "${BASH_SOURCE[0]}")/../../../.."
+
+# Setup a 'ci' cluster if it doesn't already exist
+if [[ -z "$(kind get clusters | grep "^${CLUSTER_NAME}$")" ]]; then
+    echo "Retrieving GCR secret"
+    imp-ci secrets read --environment="production" --buildkite-org="improbable" --secret-type="gce-key-pair" --secret-name="svp/svp-spike-gcr-credentials" --write-to="$HOME/gcr-key.json"
+
+    pushd ${SVP_REPO}
+    echo "Creating local cluster"
+    ./local/create-cluster.sh ${CLUSTER_NAME}
+
+    echo "Setup docker auth"
+    gcloud auth activate-service-account --key-file=$HOME/gcr-key.json
+
+    echo "Preloading images"
+    ./local/preload-images-agones.sh ${CLUSTER_NAME}
+    popd
+fi
+
+kubectl config set current-context kind-${CLUSTER_NAME}
+sleep 2
+
+# TODO: Find a better way of doing this
+echo "Deleting existing cluster resources"
+kubectl delete namespace game-scavengers --ignore-not-found
+kubectl delete namespace improbable --ignore-not-found
+kubectl delete namespace agones-system --ignore-not-found
+sleep 2
+
+pushd ${SVP_REPO}/config/k8s
+
+echo "Bootstrapping cluster"
+./bootstrap.sh local
+
+# HAX: Issuer needs a ca bundle. To make sure people don't check in their own and confuse others
+# the overlay for ca bundle is gitignored and we generate a custom one here.
+echo "Generate CA bundle overlays"
+./gen-ca-bundle-overlays.sh local
+
+echo "Deploying agones + vault"
+kubectl apply -k vault/overlays/local
+kubectl wait --namespace improbable --for=condition=Ready pod -l app=vault
+kubectl apply -k agones/overlays/local
+kubectl wait --namespace agones-system --for=condition=Ready pod -l app=agones --timeout=3m
+kubectl apply -k fleet/overlays/local
+
+sleep 2
+popd
+
+# Wait for pods to be ready
+echo "Waiting for pods to be ready"
+kubectl wait --namespace game-scavengers --for=condition=ready pod --all --timeout=10m
+
+# Wait and give the workers some time to connect
+sleep 10

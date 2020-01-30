@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+
+# Ensure that the kind cluster has been cleaned up fully
+
+set -o errexit
+set -o nounset
+set -o xtrace
+set -o pipefail
+
+# TODO Delete namespaces instead?
+echo "Exiting, deleting existing cluster resources"
+kubectl delete deployment,statefulset,service,fleet -n game-scavengers --all --wait
